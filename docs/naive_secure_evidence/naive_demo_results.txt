@@ -1,0 +1,17 @@
+test_01_client_controlled_price (test_naive_concepts.NaiveConceptDemonstrations.test_01_client_controlled_price) ... ok
+test_02_coupon_reuse (test_naive_concepts.NaiveConceptDemonstrations.test_02_coupon_reuse) ... ok
+test_03_negative_quantity (test_naive_concepts.NaiveConceptDemonstrations.test_03_negative_quantity) ... ok
+test_04_missing_csrf (test_naive_concepts.NaiveConceptDemonstrations.test_04_missing_csrf) ... ok
+test_05_missing_role_authorization (test_naive_concepts.NaiveConceptDemonstrations.test_05_missing_role_authorization) ... ok
+test_06_idor (test_naive_concepts.NaiveConceptDemonstrations.test_06_idor) ... ok
+test_07_raw_html_injection (test_naive_concepts.NaiveConceptDemonstrations.test_07_raw_html_injection) ... ok
+test_08_sql_string_concatenation (test_naive_concepts.NaiveConceptDemonstrations.test_08_sql_string_concatenation) ... ok
+test_09_mfa_identity_unbound (test_naive_concepts.NaiveConceptDemonstrations.test_09_mfa_identity_unbound) ... ok
+test_10_reusable_challenge (test_naive_concepts.NaiveConceptDemonstrations.test_10_reusable_challenge) ... ok
+test_11_no_location_time_gate (test_naive_concepts.NaiveConceptDemonstrations.test_11_no_location_time_gate) ... ok
+test_12_no_typing_baseline (test_naive_concepts.NaiveConceptDemonstrations.test_12_no_typing_baseline) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.000s
+
+OK
