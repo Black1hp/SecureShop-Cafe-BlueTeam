@@ -1,0 +1,30 @@
+# Python environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Database and local user information
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Secrets and sessions
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.session
+secrets/
+private/
+
+# Temporary files
+.DS_Store
+*.log
+
+# Old local backup
+app_before_passkey_fix.py

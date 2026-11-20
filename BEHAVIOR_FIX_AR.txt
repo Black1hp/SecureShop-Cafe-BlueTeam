@@ -1,0 +1,19 @@
+SecureShop Cafe - Typing Behavior Enrollment Fix
+
+Problem: after saving five samples, a sixth submission reset the samples list to one. The security page then displayed Not ready.
+
+Fix:
+- When five samples exist, the enrollment form is replaced with a completion message.
+- Any additional POST is rejected with HTTP 409; saved samples remain intact.
+- Added regression coverage to tests/test_app.py to prevent this bug returning.
+
+Install on your Mac:
+1. Stop the app.py server (Control+C).
+2. Back up the existing project folder and secureshop.db.
+3. Copy app.py and tests/test_app.py from this ZIP over the matching files in the existing SecureShop_Cafe_v2 folder.
+4. Do not replace or delete secureshop.db or .venv.
+5. With the virtual environment active: python -m unittest discover -s tests -v
+6. Start the server: python app.py
+7. In the User account enroll four additional typing samples to reach 5/5. Avoid a sixth submit.
+
+NOTE: Existing one saved sample is preserved. Never share your password, MFA QR, OTP, or database with third parties.
