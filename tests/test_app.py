@@ -144,6 +144,19 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         self.assertIn('already used',body)
 
 
+    def test_newsletter_never_displays_coupon_to_submitter(self):
+        status,body,_=self.post('/newsletter',{'email':'news@example.test'})
+        self.assertEqual(status,200)
+        self.assertIn('was sent to it',body)
+        with app.db() as c:
+            code=c.execute('SELECT code FROM coupons JOIN newsletters ON newsletters.coupon_id=coupons.id WHERE newsletters.email=?',('news@example.test',)).fetchone()['code']
+        self.assertNotIn(code,body)  # harvesting defense: code only via the mailbox/dev terminal
+        status,body2,_=self.post('/newsletter',{'email':'news@example.test'})
+        self.assertEqual(status,200)
+        self.assertEqual(body,body2)  # identical response reveals nothing about prior subscription
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) AS n FROM newsletters WHERE email=?',('news@example.test',)).fetchone()['n'],1)
+
     def test_argon2id_password_storage(self):
         email,pw=self.create_user('argon2@example.test')
         with app.db() as c:

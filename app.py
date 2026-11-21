@@ -884,14 +884,16 @@ class App(BaseHTTPRequestHandler):
             email = d.get('email','').strip().lower()
             if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email) or len(email)>254: raise ValueError('Invalid email.')
             existing = c.execute('SELECT coupon_id FROM newsletters WHERE email=?',(email,)).fetchone()
-            if existing:
-                self.send_html(200,self.page('Newsletter','<div class="notice">This email is already subscribed. Check your original coupon.</div>'))
-                return
-            code = 'NEWS-'+secrets.token_hex(6).upper()
-            with transaction(c):
-                cp_id = c.execute('INSERT INTO coupons(code,percent_off) VALUES(?,10)',(code,)).lastrowid
-                c.execute('INSERT INTO newsletters(email,coupon_id) VALUES(?,?)',(email,cp_id))
-            self.send_html(200,self.page('Newsletter coupon','<div class="notice">Development demo coupon: <strong>'+escape(code)+'</strong>. Save this code for checkout.</div>'))
+            if not existing:
+                code = 'NEWS-'+secrets.token_hex(6).upper()
+                with transaction(c):
+                    cp_id = c.execute('INSERT INTO coupons(code,percent_off) VALUES(?,10)',(code,)).lastrowid
+                    c.execute('INSERT INTO newsletters(email,coupon_id) VALUES(?,?)',(email,cp_id))
+                # Coupons must never be shown to whoever submits a form: only the
+                # mailbox owner may learn the code. Local dev prints to the
+                # server terminal like the confirmation link; production email.
+                print('DEVELOPMENT NEWSLETTER COUPON for %s: %s' % (email,code), flush=True)
+            self.send_html(200,self.page('Newsletter','<div class="notice">If this email is new to our list, your one-time 10% coupon was sent to it. In this local development environment, it is printed to the server terminal.</div>'))
         elif path == '/admin/product':
             if not self.must_admin(): return
             name=d.get('name','').strip(); desc=d.get('description','').strip()
