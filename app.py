@@ -202,6 +202,10 @@ def init_db():
         names = {row['name'] for row in c.execute('PRAGMA table_info(sessions)')}
         if 'pending_passkey_id' not in names:
             c.execute('ALTER TABLE sessions ADD COLUMN pending_passkey_id INTEGER REFERENCES users(id)')
+        order_cols = {row['name'] for row in c.execute('PRAGMA table_info(orders)')}
+        if 'idempotency_key' not in order_cols:
+            c.execute('ALTER TABLE orders ADD COLUMN idempotency_key TEXT')
+        c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_idem ON orders(user_id, idempotency_key)')
         if not c.execute('SELECT 1 FROM products LIMIT 1').fetchone():
             c.executemany('INSERT INTO products(name,description,price_cents,stock) VALUES(?,?,?,?)', [
                 ('Spanish Latte', 'Velvety espresso, steamed milk, and our signature sweet condensed milk.', 2499, 40),
@@ -615,7 +619,8 @@ class App(BaseHTTPRequestHandler):
             if not self.must_login(): return
             rows = self.cart_rows(c)
             subtotal = sum(r['price_cents']*r['qty'] for r in rows)
-            body = '<div class="panel"><p>Subtotal: <strong>'+money(subtotal)+'</strong></p><p>Available store credit: '+money(self.user['credit_cents'])+'</p><form method="post" action="/checkout">'+self.csrf_field()+'<label>Coupon code (optional)</label><input name="coupon" maxlength="40"><button>Pay with store credit</button></form><p><small>Totals, discount, stock, and balance are verified on the server during checkout.</small></p></div>'
+            checkout_key = secrets.token_urlsafe(16)
+            body = '<div class="panel"><p>Subtotal: <strong>'+money(subtotal)+'</strong></p><p>Available store credit: '+money(self.user['credit_cents'])+'</p><form method="post" action="/checkout">'+self.csrf_field()+'<input type="hidden" name="key" value="'+checkout_key+'"><label>Coupon code (optional)</label><input name="coupon" maxlength="40"><button>Pay with store credit</button></form><p><small>Totals, discount, stock, and balance are verified on the server during checkout.</small></p></div>'
             self.send_html(200,self.page('Checkout',body))
         elif path == '/account':
             if not self.must_login(): return
@@ -910,29 +915,35 @@ class App(BaseHTTPRequestHandler):
             if not self.must_login(): return
             code = d.get('coupon','').strip().upper()
             if len(code)>40: raise ValueError('Invalid coupon.')
+            key = d.get('key','')
+            if not re.fullmatch(r'[A-Za-z0-9_-]{10,80}',key): raise ValueError('Invalid checkout key. Reload the checkout page.')
             with transaction(c):
-                rows = self.cart_rows(c)
-                if not rows: raise ValueError('Cart is empty.')
-                if any(not r['active'] or r['qty']>r['stock'] for r in rows): raise ValueError('A product is unavailable. Please update cart.')
-                subtotal = sum(r['price_cents']*r['qty'] for r in rows)
-                coupon = None; discount = 0
-                if code:
-                    coupon = c.execute('SELECT * FROM coupons WHERE code=? AND active=1',(code,)).fetchone()
-                    if not coupon: raise ValueError('Coupon invalid or inactive.')
-                    if c.execute('SELECT 1 FROM coupon_uses WHERE user_id=? AND coupon_id=?',(self.user['id'],coupon['id'])).fetchone():
-                        raise ValueError('Coupon already used.')
-                    discount = subtotal*coupon['percent_off']//100
-                total = subtotal-discount
-                account = c.execute('SELECT credit_cents FROM users WHERE id=?',(self.user['id'],)).fetchone()
-                if account['credit_cents'] < total: raise ValueError('Insufficient store credit.')
-                c.execute('UPDATE users SET credit_cents=credit_cents-? WHERE id=?',(total,self.user['id']))
-                order_id = c.execute('INSERT INTO orders(user_id,total_cents,discount_cents,created_at) VALUES(?,?,?,?)',(self.user['id'],total,discount,int(time.time()))).lastrowid
-                for r in rows:
-                    c.execute('UPDATE products SET stock=stock-? WHERE id=?',(r['qty'],r['product_id']))
-                    c.execute('INSERT INTO order_items(order_id,product_id,name_snapshot,unit_price_cents,qty) VALUES(?,?,?,?,?)',(order_id,r['product_id'],r['name'],r['price_cents'],r['qty']))
-                if coupon: c.execute('INSERT INTO coupon_uses(user_id,coupon_id) VALUES(?,?)',(self.user['id'],coupon['id']))
-                c.execute('DELETE FROM carts WHERE session_hash=?',(self.sid_hash,))
-                audit_event(c, 'checkout_complete', self.user['id'], 'order', order_id)
+                existing = c.execute('SELECT id FROM orders WHERE user_id=? AND idempotency_key=?',(self.user['id'],key)).fetchone()
+                if existing:
+                    order_id = existing['id']  # replayed submit returns the same receipt; no second debit
+                else:
+                    rows = self.cart_rows(c)
+                    if not rows: raise ValueError('Cart is empty.')
+                    if any(not r['active'] or r['qty']>r['stock'] for r in rows): raise ValueError('A product is unavailable. Please update cart.')
+                    subtotal = sum(r['price_cents']*r['qty'] for r in rows)
+                    coupon = None; discount = 0
+                    if code:
+                        coupon = c.execute('SELECT * FROM coupons WHERE code=? AND active=1',(code,)).fetchone()
+                        if not coupon: raise ValueError('Coupon invalid or inactive.')
+                        if c.execute('SELECT 1 FROM coupon_uses WHERE user_id=? AND coupon_id=?',(self.user['id'],coupon['id'])).fetchone():
+                            raise ValueError('Coupon already used.')
+                        discount = subtotal*coupon['percent_off']//100
+                    total = subtotal-discount
+                    account = c.execute('SELECT credit_cents FROM users WHERE id=?',(self.user['id'],)).fetchone()
+                    if account['credit_cents'] < total: raise ValueError('Insufficient store credit.')
+                    c.execute('UPDATE users SET credit_cents=credit_cents-? WHERE id=?',(total,self.user['id']))
+                    order_id = c.execute('INSERT INTO orders(user_id,total_cents,discount_cents,created_at,idempotency_key) VALUES(?,?,?,?,?)',(self.user['id'],total,discount,int(time.time()),key)).lastrowid
+                    for r in rows:
+                        c.execute('UPDATE products SET stock=stock-? WHERE id=?',(r['qty'],r['product_id']))
+                        c.execute('INSERT INTO order_items(order_id,product_id,name_snapshot,unit_price_cents,qty) VALUES(?,?,?,?,?)',(order_id,r['product_id'],r['name'],r['price_cents'],r['qty']))
+                    if coupon: c.execute('INSERT INTO coupon_uses(user_id,coupon_id) VALUES(?,?)',(self.user['id'],coupon['id']))
+                    c.execute('DELETE FROM carts WHERE session_hash=?',(self.sid_hash,))
+                    audit_event(c, 'checkout_complete', self.user['id'], 'order', order_id)
             self.redirect('/order/'+str(order_id))
         elif path == '/account':
             if not self.must_login(): return

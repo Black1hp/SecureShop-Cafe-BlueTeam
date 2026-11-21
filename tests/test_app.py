@@ -60,6 +60,12 @@ class WebTestHelpers:
         if csrf: data = dict(data,csrf=self.csrf('/register' if path == '/register' else '/login'))
         return self.request('POST',path,data)
 
+    def checkout(self, data=None, key=None):
+        if key is None:
+            text = self.get('/checkout')[1]
+            key = re.search(r'name="key" value="([^"]+)"', text).group(1)
+        return self.post('/checkout', dict(data or {}, key=key))
+
     def create_user(self, email='alice@example.test', pw='a good password 123'):
         # Create unconfirmed account directly for deterministic test fixture,
         # then verify user-facing auth / authorization via HTTP.
@@ -92,7 +98,7 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         self.assertEqual(status,200)
         status,_,_=self.post('/cart/add',{'product_id':'1','qty':'2'})
         self.assertEqual(status,200)
-        status,body,_=self.post('/checkout',{'coupon':''})
+        status,body,_=self.checkout()
         self.assertEqual(status,200)
         self.assertIn('Order confirmed',body)
         with app.db() as c:
@@ -105,7 +111,7 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         first,pw=self.create_user('first@example.test')
         self.login(first,pw)
         self.post('/cart/add',{'product_id':'2','qty':'1'})
-        self.post('/checkout',{'coupon':''})
+        self.checkout()
         with app.db() as c:
             oid=c.execute('SELECT id FROM orders WHERE user_id=(SELECT id FROM users WHERE email=?)',(first,)).fetchone()['id']
         status,_,_=self.get('/admin')
@@ -135,11 +141,11 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         status,_,_=self.post('/cart/add',{'product_id':'1','qty':'-1'})
         self.assertEqual(status,400)
         self.post('/cart/add',{'product_id':'1','qty':'1'})
-        status,body,_=self.post('/checkout',{'coupon':'TEST10'})
+        status,body,_=self.checkout({'coupon':'TEST10'})
         self.assertEqual(status,200)
         self.assertIn('$22.50',body)
         self.post('/cart/add',{'product_id':'1','qty':'1'})
-        status,body,_=self.post('/checkout',{'coupon':'TEST10'})
+        status,body,_=self.checkout({'coupon':'TEST10'})
         self.assertEqual(status,400)
         self.assertIn('already used',body)
 
@@ -170,16 +176,34 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         self.login(email,pw)
         status,_,_=self.post('/cart/add',{'product_id':'1','qty':'1','price_cents':'1'})
         self.assertEqual(status,200)
-        status,_,_=self.post('/checkout',{'coupon':'','total_cents':'1','price_cents':'1'})
+        status,_,_=self.checkout({'coupon':'','total_cents':'1','price_cents':'1'})
         self.assertEqual(status,200)
         with app.db() as c:
             total=c.execute('SELECT total_cents FROM orders WHERE user_id=(SELECT id FROM users WHERE email=?)',(email,)).fetchone()['total_cents']
         self.assertEqual(total,2499)
 
+    def test_checkout_replay_returns_same_order_no_second_debit(self):
+        email,pw=self.create_user('replay@example.test')
+        self.login(email,pw)
+        self.post('/cart/add',{'product_id':'1','qty':'1'})
+        text=self.get('/checkout')[1]
+        key=re.search(r'name="key" value="([^"]+)"',text).group(1)
+        status,body,_=self.checkout(key=key)
+        self.assertEqual(status,200)
+        self.assertIn('Order confirmed',body)
+        status,body2,_=self.checkout(key=key)  # replayed double-submit
+        self.assertEqual(status,200)
+        self.assertEqual(body,body2)
+        with app.db() as c:
+            uid=c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone()['id']
+            self.assertEqual(c.execute('SELECT COUNT(*) AS n FROM orders WHERE user_id=?',(uid,)).fetchone()['n'],1)
+            self.assertEqual(c.execute('SELECT credit_cents FROM users WHERE id=?',(uid,)).fetchone()['credit_cents'],10000-2499)
+            self.assertEqual(c.execute('SELECT stock FROM products WHERE id=1').fetchone()['stock'],39)
+
     def test_checkout_bypass_blocked_and_no_side_effect(self):
         email,pw=self.create_user('workflow@example.test')
         self.login(email,pw)
-        status,_,_=self.post('/checkout',{'coupon':'','paid':'1','order_status':'confirmed'})
+        status,_,_=self.checkout({'coupon':'','paid':'1','order_status':'confirmed'})
         self.assertEqual(status,400)
         with app.db() as c:
             user=c.execute('SELECT id,credit_cents FROM users WHERE email=?',(email,)).fetchone()
