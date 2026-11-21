@@ -232,6 +232,49 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         status,_,_=self.post('/mfa',{'code':code})
         self.assertEqual(status,401)
 
+    def test_recovery_code_single_use_login(self):
+        email,pw=self.create_user('recovery@example.test')
+        with app.db() as c:
+            uid=c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone()['id']
+            c.execute('UPDATE users SET totp_secret=? WHERE id=?',(new_totp_secret(),uid))
+            codes=app.issue_recovery_codes(c,uid)
+        self.assertEqual(len(codes),8)
+        self.login(email,pw)  # -> MFA pending
+        status,body,_=self.post('/mfa',{'code':codes[0].lower()})
+        self.assertEqual(status,200)
+        self.assertIn('My account',body)
+        self.post('/logout',{})
+        self.login(email,pw)
+        status,_,_=self.post('/mfa',{'code':codes[0]})
+        self.assertEqual(status,401)  # replay of a consumed code
+        status,body,_=self.post('/mfa',{'code':codes[1]})
+        self.assertEqual(status,200)
+        with app.db() as c:
+            events=[r['event'] for r in c.execute("SELECT event FROM audit_events WHERE actor_id=? AND event='mfa_recovery_used'",(uid,))]
+            self.assertEqual(len(events),2)
+            self.assertEqual(c.execute('SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id=?',(uid,)).fetchone()['n'],6)
+
+    def test_recovery_regeneration_replaces_old_set(self):
+        email,pw=self.create_user('regen@example.test')
+        with app.db() as c:
+            uid=c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone()['id']
+            c.execute('UPDATE users SET totp_secret=? WHERE id=?',(new_totp_secret(),uid))
+            old=app.issue_recovery_codes(c,uid)
+        self.login(email,pw)
+        self.post('/mfa',{'code':old[0]})  # consume one to log in
+        status,body,_=self.get('/mfa/recovery')
+        self.assertEqual(status,200)
+        self.assertIn('Recovery codes remaining: <strong>7</strong>',body)
+        status,_,_=self.post('/mfa/recovery',{'password':'wrong password'})
+        self.assertEqual(status,403)
+        status,body,_=self.post('/mfa/recovery',{'password':pw})
+        self.assertEqual(status,200)
+        self.assertIn('New recovery codes',body)
+        self.post('/logout',{})
+        self.login(email,pw)
+        status,_,_=self.post('/mfa',{'code':old[1]})
+        self.assertEqual(status,401)  # old set invalidated by regeneration
+
     def test_mfa_enrollment_and_wrong_password(self):
         email,pw=self.create_user('enroll@example.test')
         self.login(email,pw)

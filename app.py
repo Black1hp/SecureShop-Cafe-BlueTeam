@@ -81,10 +81,24 @@ def authenticator_qr(secret, account_email):
     return base64.b64encode(output.getvalue()).decode('ascii')
 
 
+def issue_recovery_codes(conn, user_id):
+    """Replace the user's single-use recovery set; returns the 8 plaintext
+    codes for a one-time display. Only SHA-256 digests are persisted."""
+    conn.execute('DELETE FROM recovery_codes WHERE user_id=?', (user_id,))
+    codes = []
+    for _ in range(8):
+        code = secrets.token_hex(2).upper() + '-' + secrets.token_hex(2).upper()
+        conn.execute('INSERT INTO recovery_codes(user_id,code_hash) VALUES(?,?)',
+                     (user_id, token_hash(code)))
+        codes.append(code)
+    return codes
+
+
 def audit_event(conn, event, actor_id=None, target_type=None, target_id=None):
     # Record security events without passwords, OTPs, tokens or user input.
     allowed = {
         'login_failed', 'login_success', 'mfa_failed', 'mfa_success', 'mfa_enabled',
+        'mfa_recovery_used', 'mfa_recovery_regenerated',
         'admin_denied', 'csrf_rejected', 'checkout_complete',
         'admin_product_changed', 'admin_coupon_changed', 'admin_user_changed',
         'behavior_enrolled', 'behavior_anomaly', 'passkey_registered', 'passkey_rejected',
@@ -179,6 +193,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS passkey_challenges (
             session_hash TEXT PRIMARY KEY REFERENCES sessions(id_hash) ON DELETE CASCADE,
             challenge TEXT NOT NULL, purpose TEXT NOT NULL, expires_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS recovery_codes (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            code_hash TEXT PRIMARY KEY);
 
         ''')
         # Non-destructive migration for databases created before Location and time policy support.
@@ -498,9 +515,11 @@ class App(BaseHTTPRequestHandler):
             if not self.must_login(): return
             profile = c.execute('SELECT samples FROM behavior_profiles WHERE user_id=?',(self.user['id'],)).fetchone()
             credentials = c.execute('SELECT COUNT(*) FROM passkeys WHERE user_id=?',(self.user['id'],)).fetchone()[0]
+            recovery_left = c.execute('SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id=?',(self.user['id'],)).fetchone()['n']
             content = ('<div class="panel"><h2>Account security center</h2>'
                        '<p>Behavioral enrollment: '+('Ready' if profile and len(json.loads(profile['samples']))>=5 else 'Not ready')+'</p>'
                        '<p>Registered passkeys: '+str(credentials)+'</p>'
+                       + ('<p>Recovery codes remaining: '+str(recovery_left)+' — <a href="/mfa/recovery">manage</a></p>' if self.user['totp_secret'] else '') +
                        '<p><a class="btn" href="/security/behavior">Enroll typing rhythm</a></p>'
                        '<p><strong>Passkey registration (localhost / supported browser)</strong></p>'
                        '<form id="passkey-register-form">'+self.csrf_field()+
@@ -548,8 +567,22 @@ class App(BaseHTTPRequestHandler):
         elif path == '/mfa':
             if not self.pending_user_id or self.user:
                 return self.error(403, 'No pending two-factor challenge.')
-            body = '<div class="panel"><p>Enter the 6-digit code from your authenticator app.</p><form method="post" action="/mfa">'+self.csrf_field()+'<label>Code</label><input name="code" pattern="[0-9]{6}" required maxlength="6" autocomplete="one-time-code"><button>Verify and sign in</button></form></div>'
+            body = ('<div class="panel"><p>Enter the 6-digit code from your authenticator app, or a recovery code.</p>'
+                    '<form method="post" action="/mfa">'+self.csrf_field()+
+                    '<label>Code</label><input name="code" required maxlength="9" autocomplete="one-time-code">'
+                    '<button>Verify and sign in</button></form>'
+                    '<p><small>Lost your authenticator? Use one of your recovery codes (format ABCD-EF12).</small></p></div>')
             self.send_html(200,self.page('Two-factor verification',body))
+        elif path == '/mfa/recovery':
+            if not self.must_login(): return
+            if not self.user['totp_secret']: return self.error(403,'Enable authenticator MFA first.')
+            remaining = c.execute('SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id=?',(self.user['id'],)).fetchone()['n']
+            body = ('<div class="panel"><p>Recovery codes remaining: <strong>'+str(remaining)+'</strong></p>'
+                    '<p>Regenerating replaces all unused codes.</p>'
+                    '<form method="post" action="/mfa/recovery">'+self.csrf_field()+
+                    '<label>Confirm your account password</label><input type="password" required name="password" autocomplete="current-password">'
+                    '<button>Generate new recovery codes</button></form></div>')
+            self.send_html(200,self.page('Recovery codes',body))
         elif path == '/mfa/setup':
             if not self.must_login(): return
             if self.user['totp_secret']:
@@ -632,6 +665,14 @@ class App(BaseHTTPRequestHandler):
         else:
             self.error(404,'Page not found.')
 
+    def recovery_codes_panel(self, codes, enabled=False):
+        items = ''.join('<li><strong>' + escape(code) + '</strong></li>' for code in codes)
+        return ('<div class="panel">' + ('<h2>MFA: Enabled</h2>' if enabled else '<h2>New recovery codes</h2>') +
+                '<p>Save these 8 single-use recovery codes now. Each works once if you lose your '
+                'authenticator. They are stored only as hashes and <strong>will not be shown again</strong>.</p>'
+                '<ul>' + items + '</ul>'
+                '<p><a class="btn" href="/account">Done</a></p></div>')
+
     def cart_rows(self, c):
         return c.execute('SELECT carts.product_id,carts.qty,products.name,products.price_cents,products.stock,products.active FROM carts JOIN products ON products.id=carts.product_id WHERE carts.session_hash=? ORDER BY products.id',(self.sid_hash,)).fetchall()
 
@@ -703,16 +744,25 @@ class App(BaseHTTPRequestHandler):
             c.execute('DELETE FROM login_attempts WHERE at<?',(cutoff,))
             failures=c.execute('SELECT count(*) AS n FROM login_attempts WHERE key_hash=? AND at>?',(key,cutoff)).fetchone()['n']
             if failures>=5:return self.error(429,'Too many MFA attempts.')
-            step=match_totp_step(u['totp_secret'],d.get('code',''))
-            if step is None or step<=u['totp_last_step']:
+            supplied = d.get('code','').strip().upper()
+            recovery = bool(re.fullmatch(r'[A-F0-9]{4}-[A-F0-9]{4}',supplied))
+            if recovery:
+                ok = c.execute('DELETE FROM recovery_codes WHERE user_id=? AND code_hash=?',
+                               (u['id'],token_hash(supplied))).rowcount == 1
+                step = None
+            else:
+                step = match_totp_step(u['totp_secret'],supplied)
+                ok = step is not None and step > u['totp_last_step']
+            if not ok:
                 c.execute('INSERT INTO login_attempts(key_hash,at) VALUES(?,?)',(key,int(time.time())))
                 audit_event(c, 'mfa_failed', u['id'])
                 return self.error(401,'Invalid or already used security code.')
             with transaction(c):
-                updated=c.execute('UPDATE users SET totp_last_step=? WHERE id=? AND totp_last_step<?',(step,u['id'],step)).rowcount
-                if updated!=1: raise ValueError('Security code already used.')
+                if not recovery:
+                    updated=c.execute('UPDATE users SET totp_last_step=? WHERE id=? AND totp_last_step<?',(step,u['id'],step)).rowcount
+                    if updated!=1: raise ValueError('Security code already used.')
                 c.execute('DELETE FROM login_attempts WHERE key_hash=?',(key,))
-                audit_event(c, 'mfa_success', u['id'])
+                audit_event(c, 'mfa_recovery_used' if recovery else 'mfa_success', u['id'])
                 if not (RISK_GATE_ENFORCE and c.execute('SELECT 1 FROM passkeys WHERE user_id=? LIMIT 1',(u['id'],)).fetchone()):
                     audit_event(c, 'login_success', u['id'])
             if RISK_GATE_ENFORCE and c.execute('SELECT 1 FROM passkeys WHERE user_id=? LIMIT 1',(u['id'],)).fetchone():
@@ -730,8 +780,18 @@ class App(BaseHTTPRequestHandler):
             with transaction(c):
                 c.execute('UPDATE users SET totp_secret=?,totp_last_step=? WHERE id=? AND totp_secret IS NULL',(enrollment['secret'],step,self.user['id']))
                 c.execute('DELETE FROM mfa_enrollments WHERE session_hash=?',(self.sid_hash,))
+                codes = issue_recovery_codes(c, self.user['id'])
                 audit_event(c, 'mfa_enabled', self.user['id'])
-            self.redirect('/account')
+            self.send_html(200,self.page('Recovery codes',self.recovery_codes_panel(codes,enabled=True)))
+        elif path == '/mfa/recovery':
+            if not self.must_login(): return
+            if not self.user['totp_secret']: return self.error(403,'Enable authenticator MFA first.')
+            if not verify_password(d.get('password',''),self.user['password_hash']):
+                return self.error(403,'Password not verified.')
+            with transaction(c):
+                codes = issue_recovery_codes(c, self.user['id'])
+                audit_event(c, 'mfa_recovery_regenerated', self.user['id'])
+            self.send_html(200,self.page('Recovery codes',self.recovery_codes_panel(codes)))
         elif path == '/security/behavior':
             if not self.must_login(): return
             if not verify_password(d.get('password',''),self.user['password_hash']):
