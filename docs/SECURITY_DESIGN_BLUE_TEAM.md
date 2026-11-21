@@ -38,7 +38,7 @@ The application is a Python ThreadingHTTPServer + SQLite secure-commerce educati
 ## 5. STRIDE (representative threats)
 | Category | Threat | Mitigation in project | Remaining risk |
 |---|---|---|---|
-| Spoofing | Password stolen and account login | Argon2id password hashing, TOTP with bound pending-user session, optional WebAuthn ES256 challenge | MFA recovery not designed; rate limits simplistic |
+| Spoofing | Password stolen and account login | Argon2id password hashing, TOTP with bound pending-user session, hashed single-use recovery codes, optional WebAuthn ES256 challenge | Rate limits simplistic (per IP+email only) |
 | Tampering | Client changes price, quantity, role or coupon | Read price from DB, positive qty, transaction validation, role authorization | Concurrency and full mutation fuzz tests pending |
 | Repudiation | Admin denies catalog changes | Allowlisted persistent audit events with actor ID and time | Local SQLite admin can modify audit; retention policy absent |
 | Information disclosure | Other user's order exposed | User-owned order query, server-side session checks | Further privacy tests required |
@@ -78,13 +78,21 @@ Every POST requires session CSRF secret and bounded urlencoded form. Cart quanti
 Audit records use allowlisted event names, numeric actor and target IDs, server timestamps. No passwords, OTPs, TOTP seeds, confirmation tokens, location coordinates or raw keystrokes are logged. Behavioral profile contains only quantized timing features retained while the account exists. This data deserves explicit consent, minimization, erasure and retention policies before real-world use. Debug logs can still expose local confirmation links; never use this in production.
 
 ## 10. Testing strategy and evidence
-- Automated: `python -m unittest discover -s tests -v` (35 tests OK in isolated environment at build time).
+- Automated: `python -m unittest discover -s tests -v` (41 tests OK in isolated environment on the hardening branch).
 - Functional smoke test: User and Admin browser sessions, initial login through checkout, product edits, newsletter, store credit and order history.
 - Security negative cases: price tampering, coupon reuse, empty cart, insufficient balance, missing CSRF, role restriction, IDOR, MFA account binding/replay, suspicious timing, out-of-policy location/time, invalid WebAuthn challenge/signature.
 - Outstanding: Manual real-device passkey registration/authentication; concurrent race stress testing; broad SAST/DAST with course-approved tooling; isolated naive-app comparisons; Red Team report and remediations; browser/OS compatibility validation.
 
 ## 11. Deployment limitations
-This is a localhost educational prototype. No formal key management/HSM, email verification service, HTTPS termination, CSP nonce strategy, WAF, centralized audit retention, trusted location attestation, backup/MFA recovery or production WebAuthn package integration. Student team should not expose the built-in Python server to internet or use real payment data. Do not pretend optional Location and time policy policy is enforced when the flag is off.
+This is a localhost educational prototype. No formal key management/HSM, email verification service, HTTPS termination, CSP nonce strategy, WAF, centralized audit retention, trusted location attestation, or production WebAuthn package integration. Student team should not expose the built-in Python server to internet or use real payment data. Do not pretend optional Location and time policy policy is enforced when the flag is off.
+
+## Hardening-branch additions (feature/secure-shop-hardening)
+- **Checkout idempotency:** `orders.idempotency_key` UNIQUE per user; GET `/checkout` mints a one-time key into the form; replayed submits return the same receipt without a second debit (`test_checkout_replay_returns_same_order_no_second_debit`).
+- **MFA recovery codes:** 8 codes shown once at TOTP enrollment, SHA-256 digests only in `recovery_codes`, single-use DELETE on redemption, password-gated regeneration at `/mfa/recovery` (`test_recovery_code_single_use_login`, `test_recovery_regeneration_replaces_old_set`).
+- **Account-enumeration closures:** `/login` verifies `DUMMY_PASSWORD_HASH` for unknown emails (timing parity); `/register` returns the identical page for taken emails (status + body) and issues no token.
+- **Newsletter coupon harvesting closed:** codes are never rendered to the submitter; delivery follows the dev-console outbox model, with a uniform response whether or not the email was already subscribed (`test_newsletter_never_displays_coupon_to_submitter`).
+- **Real-HTTP naive comparison:** `naive_lab.py` (loopback-only, disposable DB) + `scripts/security_compare.py` produce 10 matched attack/defense transcripts under `evidence/` (10/10 defended).
+- **Pinned dependencies** (`requirements.txt` exact versions) and `docs/ARCHITECTURE.md`, `docs/ATTACK_EVIDENCE.md`, `docs/DEMO_SCRIPT.md`, `docs/QA_PREP.md`, `docs/THIRD_PARTY_CREDITS.md` added.
 
 ## 12. Next evidence before final submission
 1. Collect redacted browser screenshots of UI and security denials.
@@ -95,4 +103,4 @@ This is a localhost educational prototype. No formal key management/HSM, email v
 
 
 ## Appendix: Verification revision
-The final test build validates WebAuthn `rp.id=localhost`, `rpId=localhost`, and origin `http://localhost:8000` together. It rejects invalid signature and stale challenges and tests time/location decision branches through HTTP with deterministic synthetic coordinates and fixed server time. The automated suite has 35 passing cases in its isolated build environment; it does not replace an independent security review. See `TEST_RESULTS.md`, `FINAL_TEST_EVIDENCE_AR.md`, and `RED_TEAM_TRACKER_AR.md`.
+The final test build validates WebAuthn `rp.id=localhost`, `rpId=localhost`, and origin `http://localhost:8000` together. It rejects invalid signature and stale challenges and tests time/location decision branches through HTTP with deterministic synthetic coordinates and fixed server time. The automated suite has 41 passing cases on the hardening branch; it does not replace an independent security review. See `TEST_RESULTS.md`, `FINAL_TEST_EVIDENCE_AR.md`, and `RED_TEAM_TRACKER_AR.md`.

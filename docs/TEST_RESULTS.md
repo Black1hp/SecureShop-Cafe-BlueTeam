@@ -1,3 +1,28 @@
+# Test results — hardening branch update (English)
+
+**Environment:** Python 3.13, isolated temp SQLite per test run (never the
+project DB). Commands and real outcomes on `feature/secure-shop-hardening`:
+
+| Command | Result |
+|---|---|
+| `python -m unittest discover -s tests` | **Ran 41 tests — OK** |
+| `python scripts/security_compare.py` (app + naive_lab running) | **10/10 scenarios: naive vulnerable, secure defended** |
+| `pip-audit` | pending — run before submission |
+| Browser walkthrough | manual checklist in `docs/DEMO_SCRIPT.md`; no automated browser driver in this environment |
+
+New regression tests added on this branch:
+`test_registration_response_does_not_reveal_existing_email`,
+`test_unknown_email_login_still_runs_argon2`,
+`test_newsletter_never_displays_coupon_to_submitter`,
+`test_recovery_code_single_use_login`,
+`test_recovery_regeneration_replaces_old_set`,
+`test_checkout_replay_returns_same_order_no_second_debit`.
+
+Still pending (human work): independent student Red Team pass with findings
+template, real-device passkey registration, browser screenshot evidence.
+
+---
+
 # Blue Team — نتائج الاختبار والحالة النهائية
 
 **الحالة:** حزمة تطوير محلية لغرض CET431 فقط، وليست نظامًا جاهزًا للنشر العام.
