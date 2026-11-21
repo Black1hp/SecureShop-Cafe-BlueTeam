@@ -32,6 +32,10 @@ MFA_PENDING_AGE = 5 * 60
 MAX_BODY = 16_384
 RISK_GATE_ENFORCE = os.environ.get('SECURESHOP_RISK_GATE_ENFORCE') == '1'  # Optional, otherwise demo check only
 
+# Hash computed once at startup so a login attempt for an unknown email still
+# performs a real Argon2 verification and leaks no existence signal by timing.
+DUMMY_PASSWORD_HASH = hash_password('not a real password - timing parity')
+
 
 @contextmanager
 def db():
@@ -642,10 +646,13 @@ class App(BaseHTTPRequestHandler):
                     token = secrets.token_urlsafe(32)
                     c.execute('INSERT INTO confirmations(token_hash,user_id,expires_at) VALUES(?,?,?)',(token_hash(token),cur.lastrowid,int(time.time())+3600))
             except sqlite3.IntegrityError:
-                return self.error(409,'This email cannot be registered.')
+                # Return the identical page as a real registration so the
+                # endpoint does not reveal which emails are already taken.
+                self.send_html(200,self.page('Registration submitted','<div class="notice">If the email can be registered, a confirmation link was sent. In this local development environment, confirmation links are printed to the server terminal.</div>'))
+                return
             # Local demo only: log verification URL, never publish this pattern for production.
             print('DEVELOPMENT CONFIRMATION LINK: http://%s:%s/confirm?token=%s' % (HOST,PORT,token), flush=True)
-            self.send_html(200,self.page('Registration submitted','<div class="notice">Account created. For this local development environment, get your confirmation link from the server terminal, then log in.</div>'))
+            self.send_html(200,self.page('Registration submitted','<div class="notice">If the email can be registered, a confirmation link was sent. In this local development environment, confirmation links are printed to the server terminal.</div>'))
         elif path == '/login':
             email = d.get('email','').strip().lower(); password = d.get('password','')
             if len(email)>254: raise ValueError('Invalid email length.')
@@ -656,7 +663,11 @@ class App(BaseHTTPRequestHandler):
             if attempts >= 5:
                 return self.error(429,'Too many attempts. Try again later.')
             u = c.execute('SELECT * FROM users WHERE email=?',(email,)).fetchone()
-            if not u or not verify_password(password,u['password_hash']) or not u['confirmed']:
+            # Always run Argon2 (even for unknown emails) so response timing
+            # does not reveal whether an account exists.
+            stored_hash = u['password_hash'] if u else DUMMY_PASSWORD_HASH
+            password_ok = verify_password(password,stored_hash)
+            if not u or not password_ok or not u['confirmed']:
                 c.execute('INSERT INTO login_attempts(key_hash,at) VALUES(?,?)',(key,int(time.time())))
                 audit_event(c, 'login_failed')
                 return self.error(401,'Invalid credentials or unconfirmed account.')

@@ -173,6 +173,23 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
             self.assertEqual(c.execute('SELECT COUNT(*) AS n FROM orders WHERE user_id=?',(user['id'],)).fetchone()['n'],0)
             self.assertEqual(user['credit_cents'],10000)
 
+    def test_registration_response_does_not_reveal_existing_email(self):
+        email,pw=self.create_user('taken@example.test')
+        status,body,_=self.post('/register',{'name':'Someone Else','email':email,'password':'another long password'})
+        self.assertEqual(status,200)
+        self.assertIn('If the email can be registered',body)
+        self.assertNotIn('cannot be registered',body)
+        with app.db() as c:
+            uid=c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone()['id']
+            self.assertEqual(c.execute('SELECT COUNT(*) AS n FROM confirmations WHERE user_id=?',(uid,)).fetchone()['n'],0)
+
+    def test_unknown_email_login_still_runs_argon2(self):
+        from unittest.mock import patch
+        with patch.object(app,'verify_password',return_value=False) as check:
+            status,_,_=self.login('no.such.user@example.test','whatever password')
+        self.assertEqual(status,401)
+        check.assert_called_once_with('whatever password',app.DUMMY_PASSWORD_HASH)
+
     def test_exceptional_email_rejected_not_truncated(self):
         huge='a'*255+'@example.test'
         status,_,_=self.post('/register',{'name':'Too Long','email':huge,'password':'long enough password'})
