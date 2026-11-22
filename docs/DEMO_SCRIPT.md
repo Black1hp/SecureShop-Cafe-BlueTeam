@@ -42,9 +42,13 @@ Walk 3–4 rows of `evidence/compare_summary.txt` live:
 - `/admin/audit`: show `login_failed`, `mfa_*`, `checkout_complete` events.
 
 ## 5. Wrap (1 min)
-- 42 automated tests green + 10/10 HTTP comparisons, both reproducible.
-- Honest limits: educational WebAuthn, no real email, sequential (not
-  parallel) replay testing, independent student Red Team pass still pending.
+- 46 automated tests green + 10/10 HTTP comparisons, both reproducible. The
+  final independent audit also retested MFA lockout, concurrent login limits,
+  pending registration, and concurrent passkey replay; see
+  `docs/REMEDIATION_REPORT.md`.
+- Honest limits: educational WebAuthn, no real email, and synthetic local
+  credentials. Parallel replay was retested over HTTP; real-device passkey and
+  browser compatibility evidence remain pending.
 
 ## If asked "what did you change vs the original?"
 Enum fixes on `/login` + `/register`, newsletter harvesting fix, recovery

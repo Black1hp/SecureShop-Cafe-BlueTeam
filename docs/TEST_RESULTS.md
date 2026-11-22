@@ -5,9 +5,9 @@ project DB). Commands and real outcomes on `feature/secure-shop-hardening`:
 
 | Command | Result |
 |---|---|
-| `python -m unittest discover -s tests` | **Ran 42 tests — OK** |
+| `python -m unittest discover -s tests` | **Ran 46 tests — OK** |
 | `python scripts/security_compare.py` (app + naive_lab running) | **10/10 scenarios: naive vulnerable, secure defended** |
-| `pip-audit` | pending — run before submission |
+| `.venv/bin/pip-audit -r requirements.txt` | **No known vulnerabilities found** |
 | Browser walkthrough | manual checklist in `docs/DEMO_SCRIPT.md`; no automated browser driver in this environment |
 
 New regression tests added on this branch:
@@ -18,6 +18,12 @@ New regression tests added on this branch:
 `test_recovery_regeneration_replaces_old_set`,
 `test_checkout_replay_returns_same_order_no_second_debit`,
 `test_registration_ip_budget`.
+
+Independent final-audit remediation regressions:
+`test_mfa_lockout_survives_rolling_window_reset`,
+`test_unverified_registration_does_not_reserve_email`,
+`test_concurrent_login_attempts_are_reserved_before_hash`,
+`test_concurrent_passkey_assertion_replay_allows_at_most_one_login`.
 
 Still pending (human work): independent student Red Team pass with findings
 template, real-device passkey registration, browser screenshot evidence.
@@ -30,7 +36,7 @@ template, real-device passkey registration, browser screenshot evidence.
 
 ## نتائج قابلة لإعادة الإنتاج
 - الأمر: `python3 -m unittest discover -s tests -q`
-- النتيجة في بيئة بناء معزولة: **Ran 35 tests — OK**.
+- النتيجة في بيئة بناء معزولة: **Ran 46 tests — OK**.
 - قاعدة البيانات: SQLite مؤقتة تُنشئها الاختبارات، **ولم نستخدم قاعدة بيانات صاحبة المشروع**.
 - الحالات المُضافة في هذه المراجعة: RP ID/Origin مطابقان لـ`localhost`، سيناريو HTTP لتوقيع Passkey صحيح أو مزوّر، رفض موقع خارج 50 كم، رفض ساعة خارج 08:00–22:00 بالقاهرة، قبول حالة سليمة، وحدود مسافة 49/51 كم تقريبيًا.
 - توجد اختبارات أخرى للـMFA وCSRF وIDOR والـCheckout والـCoupons وXSS وSQLi وAudit وTyping Behavior.
@@ -45,9 +51,9 @@ template, real-device passkey registration, browser screenshot evidence.
 
 ## ما لم يُنفَّذ أو لم يُوثّق بعد
 - فحص DAST شامل بالمتصفح ومراجعة SAST بواسطة أدوات مستقلة: **Pending**.
-- اختبارات تحميل/تزامن متكررة على قاعدة بيانات تطبيق حقيقية: **Pending**.
+- اختبارات تزامن HTTP لفشل تسجيل الدخول وإعادة تشغيل Passkey: **تمت وأعيدت بعد الإصلاح**؛ اختبارات التحميل العامة ما زالت **Pending**.
 - مقارنة هجوم على نموذج ضعيف مقابل النسخة المحمية لكل نقطة في المنهج: **Pending**.
-- سجل ثغرات Red Team المستقل وإصلاحاته وإعادة اختبارها: **Pending - يحتاج مخرجات الفريق**.
+- سجل ثغرات Red Team المستقل وإصلاحاته وإعادة اختبارها: **تمت F1–F4**؛ انظري `docs/REMEDIATION_REPORT.md`.
 - تقرير تشغيل يدوي مُوقَّع بتاريخ وScreenshots من النسخة النهائية بعد تركيبها: **Pending**.
 - التأكد من توافق Apple Passwords/Google Password Manager على كل أنظمة التشغيل: **غير مُثبت**.
 

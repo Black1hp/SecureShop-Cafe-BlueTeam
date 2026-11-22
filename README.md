@@ -70,8 +70,9 @@ the app database — run it against a throwaway DB (`SECURESHOP_DB=/tmp/x.db`).
   audit log, never identity factors. The optional login gate is off by default.
 - Confirmation links / newsletter coupons print to the server terminal instead
   of email, by design.
-- Independent student Red Team pass and real-device passkey test are still
-  pending — see `docs/SECURITY_COVERAGE.md` and `docs/TEST_RESULTS.md`.
+- The final independent local audit and F1–F4 remediation retest are recorded
+  in `docs/REMEDIATION_REPORT.md`; real-device passkey and browser walkthroughs
+  remain pending — see `docs/SECURITY_COVERAGE.md` and `docs/TEST_RESULTS.md`.
 
 ## Docs
 

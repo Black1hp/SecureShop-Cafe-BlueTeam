@@ -29,6 +29,9 @@ HOST = os.environ.get('SECURESHOP_HOST', '127.0.0.1')
 PORT = int(os.environ.get('SECURESHOP_PORT', '8000'))
 SESSION_AGE = 60 * 60 * 8
 MFA_PENDING_AGE = 5 * 60
+MFA_FAILURES_PER_LOCK = 5
+MFA_LOCK_BASE = 5 * 60
+MFA_LOCK_MAX = 60 * 60
 MAX_BODY = 16_384
 RISK_GATE_ENFORCE = os.environ.get('SECURESHOP_RISK_GATE_ENFORCE') == '1'  # Optional, otherwise demo check only
 
@@ -92,6 +95,28 @@ def ip_budget(conn, bucket, ip, limit=10, window=600):
     return True
 
 
+def reserve_attempt(conn, key, limit=5, window=600):
+    """Atomically reserve a password-attempt slot before expensive hashing."""
+    now = int(time.time())
+    cutoff = now - window
+    with transaction(conn):
+        conn.execute('DELETE FROM login_attempts WHERE at<?', (cutoff,))
+        attempts = conn.execute(
+            'SELECT COUNT(*) AS n FROM login_attempts WHERE key_hash=? AND at>?',
+            (key, cutoff)).fetchone()['n']
+        if attempts >= limit:
+            return False
+        conn.execute('INSERT INTO login_attempts(key_hash,at) VALUES(?,?)', (key, now))
+    return True
+
+
+def mfa_lock_seconds(failures):
+    if failures % MFA_FAILURES_PER_LOCK:
+        return 0
+    level = max(0, failures // MFA_FAILURES_PER_LOCK - 1)
+    return min(MFA_LOCK_MAX, MFA_LOCK_BASE * (2 ** level))
+
+
 def issue_recovery_codes(conn, user_id):
     """Replace the user's single-use recovery set; returns the 8 plaintext
     codes for a one-time display. Only SHA-256 digests are persisted."""
@@ -152,6 +177,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS confirmations (
           token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           expires_at INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS pending_registrations (
+          email TEXT PRIMARY KEY, display_name TEXT NOT NULL, password_hash TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions (
           id_hash TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
           csrf TEXT NOT NULL, expires_at INTEGER NOT NULL, pending_user_id INTEGER REFERENCES users(id),
@@ -194,6 +222,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS login_attempts (
           key_hash TEXT NOT NULL, at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(key_hash,at);
+        CREATE TABLE IF NOT EXISTS mfa_throttles (
+          user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+          failures INTEGER NOT NULL DEFAULT 0,
+          locked_until INTEGER NOT NULL DEFAULT 0,
+          last_failure_at INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS behavior_profiles (
             user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
             samples TEXT NOT NULL, updated_at INTEGER NOT NULL);
@@ -573,11 +606,26 @@ class App(BaseHTTPRequestHandler):
             self.send_html(200,self.page('Register' if register else 'Login',body))
         elif path == '/confirm':
             token = query.get('token', [''])[0]
-            row = c.execute('SELECT user_id FROM confirmations WHERE token_hash=? AND expires_at>?',(token_hash(token),int(time.time()))).fetchone() if token else None
-            if not row: return self.error(400,'Confirmation link invalid or expired.')
+            if not token: return self.error(400,'Confirmation link invalid or expired.')
             with transaction(c):
-                c.execute('UPDATE users SET confirmed=1 WHERE id=?',(row['user_id'],))
-                c.execute('DELETE FROM confirmations WHERE user_id=?',(row['user_id'],))
+                now=int(time.time())
+                row=c.execute('SELECT email,display_name,password_hash FROM pending_registrations WHERE token_hash=? AND expires_at>?',(token_hash(token),now)).fetchone()
+                if row:
+                    existing=c.execute('SELECT id,confirmed FROM users WHERE email=?',(row['email'],)).fetchone()
+                    if existing and existing['confirmed']:
+                        c.execute('DELETE FROM pending_registrations WHERE email=?',(row['email'],))
+                    else:
+                        if existing:
+                            c.execute('DELETE FROM users WHERE id=?',(existing['id'],))
+                        c.execute('INSERT INTO users(email,display_name,password_hash,confirmed) VALUES(?,?,?,1)',
+                                  (row['email'],row['display_name'],row['password_hash']))
+                        c.execute('DELETE FROM pending_registrations WHERE email=?',(row['email'],))
+                else:
+                    legacy=c.execute('SELECT user_id FROM confirmations WHERE token_hash=? AND expires_at>?',(token_hash(token),now)).fetchone()
+                    if not legacy:
+                        return self.error(400,'Confirmation link invalid or expired.')
+                    c.execute('UPDATE users SET confirmed=1 WHERE id=?',(legacy['user_id'],))
+                    c.execute('DELETE FROM confirmations WHERE user_id=?',(legacy['user_id'],))
             self.send_html(200,self.page('Account confirmed','<div class="notice">Your email is confirmed. <a href="/login">Log in</a>.</div>'))
         elif path == '/mfa':
             if not self.pending_user_id or self.user:
@@ -699,14 +747,22 @@ class App(BaseHTTPRequestHandler):
                 raise ValueError('Enter a valid name/email and a password of 12–128 characters.')
             if not ip_budget(c, 'register', self.client_address[0]):
                 return self.error(429,'Too many registrations. Try again later.')
-            try:
-                with transaction(c):
-                    cur = c.execute('INSERT INTO users(email,display_name,password_hash) VALUES(?,?,?)',(email,name,hash_password(password)))
-                    token = secrets.token_urlsafe(32)
-                    c.execute('INSERT INTO confirmations(token_hash,user_id,expires_at) VALUES(?,?,?)',(token_hash(token),cur.lastrowid,int(time.time())+3600))
-            except sqlite3.IntegrityError:
-                # Return the identical page as a real registration so the
-                # endpoint does not reveal which emails are already taken.
+            token = secrets.token_urlsafe(32)
+            with transaction(c):
+                existing=c.execute('SELECT id,confirmed FROM users WHERE email=?',(email,)).fetchone()
+                if existing and existing['confirmed']:
+                    # Keep the response uniform and do not disturb an active account.
+                    c.execute('DELETE FROM pending_registrations WHERE email=?',(email,))
+                    token=None
+                else:
+                    if existing:
+                        # Remove legacy unconfirmed reservations before replacing them
+                        # with an ownership-pending registration.
+                        c.execute('DELETE FROM users WHERE id=?',(existing['id'],))
+                    c.execute('INSERT INTO pending_registrations(email,display_name,password_hash,token_hash,expires_at) VALUES(?,?,?,?,?) '
+                              'ON CONFLICT(email) DO UPDATE SET display_name=excluded.display_name,password_hash=excluded.password_hash,token_hash=excluded.token_hash,expires_at=excluded.expires_at',
+                              (email,name,hash_password(password),token_hash(token),int(time.time())+3600))
+            if token is None:
                 self.send_html(200,self.page('Registration submitted','<div class="notice">If the email can be registered, a confirmation link was sent. In this local development environment, confirmation links are printed to the server terminal.</div>'))
                 return
             # Local demo only: log verification URL, never publish this pattern for production.
@@ -716,10 +772,7 @@ class App(BaseHTTPRequestHandler):
             email = d.get('email','').strip().lower(); password = d.get('password','')
             if len(email)>254: raise ValueError('Invalid email length.')
             key = token_hash(self.client_address[0]+'|'+email)
-            cutoff = int(time.time())-600
-            c.execute('DELETE FROM login_attempts WHERE at<?',(cutoff,))
-            attempts = c.execute('SELECT count(*) AS n FROM login_attempts WHERE key_hash=? AND at>?',(key,cutoff)).fetchone()['n']
-            if attempts >= 5:
+            if not reserve_attempt(c, key):
                 return self.error(429,'Too many attempts. Try again later.')
             u = c.execute('SELECT * FROM users WHERE email=?',(email,)).fetchone()
             # Always run Argon2 (even for unknown emails) so response timing
@@ -727,7 +780,6 @@ class App(BaseHTTPRequestHandler):
             stored_hash = u['password_hash'] if u else DUMMY_PASSWORD_HASH
             password_ok = verify_password(password,stored_hash)
             if not u or not password_ok or not u['confirmed']:
-                c.execute('INSERT INTO login_attempts(key_hash,at) VALUES(?,?)',(key,int(time.time())))
                 audit_event(c, 'login_failed')
                 return self.error(401,'Invalid credentials or unconfirmed account.')
             profile=c.execute('SELECT samples FROM behavior_profiles WHERE user_id=?',(u['id'],)).fetchone()
@@ -758,31 +810,52 @@ class App(BaseHTTPRequestHandler):
             u=c.execute('SELECT id,totp_secret,totp_last_step FROM users WHERE id=?',(self.pending_user_id,)).fetchone()
             if not u or not u['totp_secret']: return self.error(403,'Invalid MFA session.')
             key=token_hash('mfa|'+str(u['id']))
-            cutoff=int(time.time())-600
-            c.execute('DELETE FROM login_attempts WHERE at<?',(cutoff,))
-            failures=c.execute('SELECT count(*) AS n FROM login_attempts WHERE key_hash=? AND at>?',(key,cutoff)).fetchone()['n']
-            if failures>=5:return self.error(429,'Too many MFA attempts.')
-            supplied = d.get('code','').strip().upper()
-            recovery = bool(re.fullmatch(r'[A-F0-9]{4}-[A-F0-9]{4}',supplied))
-            if recovery:
-                ok = c.execute('DELETE FROM recovery_codes WHERE user_id=? AND code_hash=?',
-                               (u['id'],token_hash(supplied))).rowcount == 1
-                step = None
-            else:
-                step = match_totp_step(u['totp_secret'],supplied)
-                ok = step is not None and step > u['totp_last_step']
-            if not ok:
-                c.execute('INSERT INTO login_attempts(key_hash,at) VALUES(?,?)',(key,int(time.time())))
-                audit_event(c, 'mfa_failed', u['id'])
-                return self.error(401,'Invalid or already used security code.')
+            now=int(time.time())
+            locked_until=0
+            blocked=False
+            failed=False
+            recovery=False
             with transaction(c):
-                if not recovery:
-                    updated=c.execute('UPDATE users SET totp_last_step=? WHERE id=? AND totp_last_step<?',(step,u['id'],step)).rowcount
-                    if updated!=1: raise ValueError('Security code already used.')
-                c.execute('DELETE FROM login_attempts WHERE key_hash=?',(key,))
-                audit_event(c, 'mfa_recovery_used' if recovery else 'mfa_success', u['id'])
-                if not (RISK_GATE_ENFORCE and c.execute('SELECT 1 FROM passkeys WHERE user_id=? LIMIT 1',(u['id'],)).fetchone()):
-                    audit_event(c, 'login_success', u['id'])
+                state=c.execute('SELECT failures,locked_until FROM mfa_throttles WHERE user_id=?',(u['id'],)).fetchone()
+                if state and state['locked_until']>now:
+                    locked_until=state['locked_until']
+                    blocked=True
+                else:
+                    current=c.execute('SELECT totp_secret,totp_last_step FROM users WHERE id=?',(u['id'],)).fetchone()
+                    supplied = d.get('code','').strip().upper()
+                    recovery = bool(re.fullmatch(r'[A-F0-9]{4}-[A-F0-9]{4}',supplied))
+                    if recovery:
+                        ok = c.execute('DELETE FROM recovery_codes WHERE user_id=? AND code_hash=?',
+                                       (u['id'],token_hash(supplied))).rowcount == 1
+                        step = None
+                    else:
+                        step = match_totp_step(current['totp_secret'],supplied)
+                        ok = step is not None and step > current['totp_last_step']
+                    if not ok:
+                        failures=(state['failures'] if state else 0)+1
+                        lock_seconds=mfa_lock_seconds(failures)
+                        locked_until=now+lock_seconds if lock_seconds else 0
+                        c.execute('INSERT INTO mfa_throttles(user_id,failures,locked_until,last_failure_at) VALUES(?,?,?,?) '
+                                  'ON CONFLICT(user_id) DO UPDATE SET failures=excluded.failures,locked_until=excluded.locked_until,last_failure_at=excluded.last_failure_at',
+                                  (u['id'],failures,locked_until,now))
+                        c.execute('INSERT INTO login_attempts(key_hash,at) VALUES(?,?)',(key,now))
+                        audit_event(c, 'mfa_failed', u['id'])
+                        failed=True
+                    else:
+                        if not recovery:
+                            updated=c.execute('UPDATE users SET totp_last_step=? WHERE id=? AND totp_last_step<?',(step,u['id'],step)).rowcount
+                            if updated!=1: raise ValueError('Security code already used.')
+                        c.execute('DELETE FROM login_attempts WHERE key_hash=?',(key,))
+                        c.execute('INSERT INTO mfa_throttles(user_id,failures,locked_until,last_failure_at) VALUES(?,?,?,?) '
+                                  'ON CONFLICT(user_id) DO UPDATE SET failures=0,locked_until=0,last_failure_at=0',
+                                  (u['id'],0,0,0))
+                        audit_event(c, 'mfa_recovery_used' if recovery else 'mfa_success', u['id'])
+                        if not (RISK_GATE_ENFORCE and c.execute('SELECT 1 FROM passkeys WHERE user_id=? LIMIT 1',(u['id'],)).fetchone()):
+                            audit_event(c, 'login_success', u['id'])
+            if blocked:
+                return self.error(429,'Too many MFA attempts. Try again later.')
+            if failed:
+                return self.error(401,'Invalid or already used security code.')
             if RISK_GATE_ENFORCE and c.execute('SELECT 1 FROM passkeys WHERE user_id=? LIMIT 1',(u['id'],)).fetchone():
                 self.redirect('/passkey/login',self.rotate_session(c,pending_passkey_id=u['id']))
             else:
@@ -868,10 +941,14 @@ class App(BaseHTTPRequestHandler):
         elif path == '/passkey/auth/finish':
             if not self.user and not self.pending_passkey_id: return self.send_json(403,{'error':'Sign in first'})
             candidate_id = self.user['id'] if self.user else self.pending_passkey_id
-            pending=c.execute('SELECT * FROM passkey_challenges WHERE session_hash=? AND purpose=? AND expires_at>?',
-                (self.sid_hash,'verify',int(time.time()))).fetchone()
-            if not pending: return self.send_json(403,{'error':'Challenge expired'})
-            c.execute('DELETE FROM passkey_challenges WHERE session_hash=?',(self.sid_hash,))
+            now=int(time.time())
+            with transaction(c):
+                pending=c.execute('SELECT * FROM passkey_challenges WHERE session_hash=? AND purpose=? AND expires_at>?',
+                    (self.sid_hash,'verify',now)).fetchone()
+                if not pending: return self.send_json(403,{'error':'Challenge expired'})
+                claimed=c.execute('DELETE FROM passkey_challenges WHERE session_hash=? AND challenge=? AND purpose=? AND expires_at>? ',
+                                  (self.sid_hash,pending['challenge'],'verify',now)).rowcount
+                if claimed != 1: return self.send_json(403,{'error':'Challenge expired'})
             try:
                 credential=json.loads(d.get('credential',''))
                 raw_id=credential['rawId']
@@ -881,21 +958,26 @@ class App(BaseHTTPRequestHandler):
                 if rp not in ('127.0.0.1','localhost'): raise ValueError('Loopback only')
                 count=verify_assertion(credential,pending['challenge'],'http://localhost:'+str(PORT),rp,
                                        key['credential_id'],key['public_key'],key['sign_count'])
-                with transaction(c):
-                    c.execute('UPDATE passkeys SET sign_count=? WHERE credential_id=?',(count,key['credential_id']))
-                    audit_event(c,'passkey_verified',candidate_id)
-                # Note: browser geolocation is a self-reported risk indicator, not verified location.
                 lat=float(d.get('lat','nan')); lon=float(d.get('lon','nan'))
                 allowed,reason,distance=location_time_result(lat,lon,30.0444,31.2357)
-                if not allowed:
-                    audit_event(c,'risk_'+reason+'_denied',candidate_id)
-                    return self.send_json(403,{'error':'Security policy denied ('+reason+'). Browser location is not trusted proof.'})
                 cookies=None
-                if self.pending_passkey_id:
-                    audit_event(c,'login_success',candidate_id)
-                    cookies=self.rotate_session(c,user_id=candidate_id)
-                return self.send_json(200,{'message':'Security policy approved: authentic passkey + local hours + location policy',
+                with transaction(c):
+                    updated=c.execute('UPDATE passkeys SET sign_count=? WHERE credential_id=? AND sign_count=?',
+                                      (count,key['credential_id'],key['sign_count'])).rowcount
+                    if updated != 1: raise ValueError('Credential counter did not advance.')
+                    audit_event(c,'passkey_verified',candidate_id)
+                    if not allowed:
+                        audit_event(c,'risk_'+reason+'_denied',candidate_id)
+                    elif self.pending_passkey_id:
+                        audit_event(c,'login_success',candidate_id)
+                        cookies=self.rotate_session(c,user_id=candidate_id)
+                if not allowed:
+                    return self.send_json(403,{'error':'Security policy denied ('+reason+'). Browser location is not trusted proof.'})
+                if cookies:
+                    return self.send_json(200,{'message':'Security policy approved: authentic passkey + local hours + location policy',
                                            'distance_km':round(distance,2), 'login_complete':bool(cookies)},cookies=cookies)
+                return self.send_json(200,{'message':'Security policy approved: authentic passkey + local hours + location policy',
+                                           'distance_km':round(distance,2), 'login_complete':False})
             except (ValueError,KeyError,TypeError,OverflowError,sqlite3.Error):
                 audit_event(c,'passkey_rejected',candidate_id)
                 return self.send_json(403,{'error':'Passkey verification or location failed'})

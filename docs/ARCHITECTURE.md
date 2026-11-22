@@ -30,10 +30,12 @@ Windows/macOS/Linux.
   limits documented; not a production claim.
 
 ## Data layout (SQLite, `secureshop.db` by default)
-users, confirmations, sessions, mfa_enrollments, recovery_codes, products,
+users, confirmations, pending_registrations, sessions, mfa_enrollments,
+recovery_codes, mfa_throttles, products,
 carts (session-bound), coupons, coupon_uses, newsletters, orders(+items,
 idempotency_key), audit_events, login_attempts, behavior_profiles, passkeys,
-passkey_challenges.
+passkey_challenges. Unverified registrations remain in `pending_registrations`
+until a confirmation token atomically promotes them into `users`.
 
 ## Request lifecycle
 `get_session` (issue/refresh cookie, expire old) → `parse_post` (content-type,

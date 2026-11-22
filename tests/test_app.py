@@ -1,4 +1,5 @@
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import os
 import re
@@ -35,7 +36,8 @@ class WebTestHelpers:
         TEMP.cleanup()
 
     def setUp(self):
-        self.client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+        self.jar = CookieJar()
+        self.client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
         self.get('/')
 
     def request(self, method, path, data=None, opener=None):
@@ -83,14 +85,24 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         self.assertEqual(status,403)
 
     def test_registration_and_confirmation_required(self):
+        from unittest.mock import patch
         email='registration@example.test'
-        status,body,_=self.post('/register',{'name':'Registration','email':email,'password':'a long test password'})
+        with patch('builtins.print') as output:
+            status,body,_=self.post('/register',{'name':'Registration','email':email,'password':'a long test password'})
         self.assertEqual(status,200)
         self.assertIn('confirmation link',body)
         status,_,_=self.login(email,'a long test password')
         self.assertEqual(status,401)
         with app.db() as c:
-            self.assertEqual(c.execute('SELECT confirmed FROM users WHERE email=?',(email,)).fetchone()['confirmed'],0)
+            self.assertIsNone(c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone())
+            self.assertIsNotNone(c.execute('SELECT email FROM pending_registrations WHERE email=?',(email,)).fetchone())
+        link=next(call.args[0] for call in output.call_args_list if 'DEVELOPMENT CONFIRMATION LINK:' in call.args[0])
+        token=re.search(r'token=([^\s]+)$',link).group(1)
+        status,_,_=self.get('/confirm?token='+urllib.parse.quote(token,safe=''))
+        self.assertEqual(status,200)
+        self.assertEqual(self.login(email,'a long test password')[0],200)
+        with app.db() as c:
+            self.assertEqual(c.execute('SELECT confirmed FROM users WHERE email=?',(email,)).fetchone()['confirmed'],1)
 
     def test_login_cart_and_checkout(self):
         email,pw=self.create_user('checkout@example.test')
@@ -326,6 +338,37 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         self.assertEqual(status,200)
         self.assertIn('MFA: Enabled',body)
 
+    def test_mfa_lockout_survives_rolling_window_reset(self):
+        email,pw=self.create_user('mfa-lockout@example.test')
+        with app.db() as c:
+            uid=c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone()['id']
+            c.execute('UPDATE users SET totp_secret=? WHERE id=?',(new_totp_secret(),uid))
+        self.login(email,pw)
+        failures=[self.post('/mfa',{'code':'000000'})[0] for _ in range(5)]
+        self.assertEqual(failures,[401]*5)
+        with app.db() as c:
+            key=app.token_hash('mfa|'+str(uid))
+            c.execute('UPDATE login_attempts SET at=? WHERE key_hash=?',(int(time.time())-601,key))
+        status,_,_=self.post('/mfa',{'code':'000000'})
+        self.assertEqual(status,429)
+        with app.db() as c:
+            state=c.execute('SELECT failures,locked_until FROM mfa_throttles WHERE user_id=?',(uid,)).fetchone()
+            self.assertGreaterEqual(state['failures'],5)
+            self.assertGreater(state['locked_until'],int(time.time()))
+
+    def test_unverified_registration_does_not_reserve_email(self):
+        email='pending-owner@example.test'
+        first=self.post('/register',{'name':'Attacker','email':email,'password':'attacker password 123'})
+        second=self.post('/register',{'name':'Owner','email':email,'password':'owner password 123'})
+        self.assertEqual(first[0],200)
+        self.assertEqual(second[0],200)
+        with app.db() as c:
+            self.assertIsNone(c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone())
+            pending=c.execute('SELECT display_name,password_hash FROM pending_registrations WHERE email=?',(email,)).fetchone()
+        self.assertEqual(pending['display_name'],'Owner')
+        self.assertTrue(verify_password('owner password 123',pending['password_hash']))
+        self.assertFalse(verify_password('attacker password 123',pending['password_hash']))
+
     def test_cafe_catalog_and_category_filters(self):
         status, body, _ = self.get('/')
         self.assertEqual(status, 200)
@@ -397,6 +440,88 @@ if __name__ == '__main__':
 
 # HTTP integration checks for the new Blue Team routes.
 class BlueTeamWebTests(WebTestHelpers, unittest.TestCase):
+    def test_concurrent_login_attempts_are_reserved_before_hash(self):
+        self.get('/')
+        csrf=self.csrf('/login')
+        cookie='; '.join(c.name+'='+c.value for c in self.jar)
+        barrier=threading.Barrier(8)
+
+        def attempt(_):
+            barrier.wait()
+            body=urllib.parse.urlencode({'email':'parallel-login@example.test',
+                                         'password':'wrong password','csrf':csrf}).encode()
+            req=urllib.request.Request(self.base+'/login',data=body,method='POST')
+            req.add_header('Content-Type','application/x-www-form-urlencoded')
+            req.add_header('Cookie',cookie)
+            try:
+                with urllib.request.urlopen(req,timeout=30) as response:
+                    return response.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            statuses=list(pool.map(attempt,range(8)))
+        self.assertEqual(statuses.count(401),5)
+        self.assertEqual(statuses.count(429),3)
+        with app.db() as c:
+            key=app.token_hash('127.0.0.1|parallel-login@example.test')
+            self.assertEqual(c.execute('SELECT COUNT(*) AS n FROM login_attempts WHERE key_hash=?',(key,)).fetchone()['n'],5)
+
+    def test_concurrent_passkey_assertion_replay_allows_at_most_one_login(self):
+        import hashlib,json,struct
+        from unittest.mock import patch
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives import hashes,serialization
+        from passkey_security import b64u
+
+        email,pw=self.create_user('passkey-race@example.test')
+        private=ec.generate_private_key(ec.SECP256R1())
+        cred_id=b'concurrent-passkey-credential'
+        ident=b64u(cred_id)
+        der=private.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
+        with app.db() as c:
+            uid=c.execute('SELECT id FROM users WHERE email=?',(email,)).fetchone()['id']
+            c.execute('INSERT INTO passkeys(credential_id,user_id,public_key,sign_count,created_at) VALUES(?,?,?,?,?)',
+                      (ident,uid,der,0,int(time.time())))
+
+        success_counts=[]
+        with patch.object(app,'RISK_GATE_ENFORCE',True), patch.object(app,'location_time_result',return_value=(True,'allow',0.0)):
+            for round_no in range(1,13):
+                self.jar=CookieJar()
+                self.client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
+                status,body,_=self.login(email,pw)
+                self.assertEqual(status,200,body)
+                self.assertIn('Passkey verification',body)
+                start=self.post('/passkey/auth/start',{})
+                self.assertEqual(start[0],200,start[1])
+                challenge=json.loads(start[1])['challenge']
+                auth=hashlib.sha256(b'localhost').digest()+bytes([0x05])+struct.pack('>I',round_no)
+                client=json.dumps({'type':'webauthn.get','challenge':challenge,'origin':'http://localhost:8000'},separators=(',',':')).encode()
+                signature=private.sign(auth+hashlib.sha256(client).digest(),ec.ECDSA(hashes.SHA256()))
+                credential=json.dumps({'type':'public-key','rawId':ident,'response':{
+                    'clientDataJSON':b64u(client),'authenticatorData':b64u(auth),'signature':b64u(signature)}})
+                csrf=self.csrf('/passkey/login')
+                cookie='; '.join(c.name+'='+c.value for c in self.jar)
+                barrier=threading.Barrier(8)
+
+                def finish(_):
+                    barrier.wait()
+                    body=urllib.parse.urlencode({'credential':credential,'lat':'30.0444','lon':'31.2357','csrf':csrf}).encode()
+                    req=urllib.request.Request(self.base+'/passkey/auth/finish',data=body,method='POST')
+                    req.add_header('Content-Type','application/x-www-form-urlencoded')
+                    req.add_header('Cookie',cookie)
+                    try:
+                        with urllib.request.urlopen(req,timeout=30) as response:
+                            return response.status
+                    except urllib.error.HTTPError as exc:
+                        return exc.code
+
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    statuses=list(pool.map(finish,range(8)))
+                successes=statuses.count(200)
+                success_counts.append(successes)
+        self.assertLessEqual(max(success_counts),1,success_counts)
+
     def test_security_page_protected_and_behaviour_five_enrollments(self):
         self.assertEqual(self.get('/security')[0],401)
         email,pw=self.create_user('behavior-web@example.test')
