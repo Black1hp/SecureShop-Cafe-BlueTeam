@@ -92,6 +92,7 @@ def secure_db():
 def provision_secure_user():
     """Create/reset the compare fixture user directly in the dev DB."""
     import app
+    app.init_db()  # schema + seed products; idempotent on existing DBs
     with secure_db() as c:
         row = c.execute('SELECT id FROM users WHERE email=?', (SECURE_EMAIL,)).fetchone()
         if not row:
@@ -252,6 +253,17 @@ def main():
     naive_reset()
 
     secure, naive = Agent(args.secure, secure=True), Agent(args.naive)
+    status, _, _ = secure.secure_login()
+    if status not in (301, 302, 303):
+        sys.exit('Secure login failed (HTTP %d). Is %s serving %s? '
+                 'Start it with: SECURESHOP_DB=%s python app.py'
+                 % (status, args.secure, SECURE_DB, SECURE_DB))
+    # A 303 login writes a session row server-side. If none appears in the DB
+    # this script provisioned, the server is bound to a different SECURESHOP_DB.
+    uid = secure_db().execute('SELECT id FROM users WHERE email=?', (SECURE_EMAIL,)).fetchone()['id']
+    if secure_db().execute('SELECT COUNT(*) AS n FROM sessions WHERE user_id=?', (uid,)).fetchone()['n'] == 0:
+        sys.exit('Login succeeded but no session row appeared in %s — the '
+                 'running server is using a different SECURESHOP_DB.' % SECURE_DB)
     results = run_scenarios(secure, naive)
 
     out = Path(args.out)

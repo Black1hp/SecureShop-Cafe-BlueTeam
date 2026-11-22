@@ -50,6 +50,12 @@ SECURESHOP_DB=$PWD/demo.db python scripts/seed_demo.py
 # start again as above
 ```
 
+**Footgun:** starting `app.py` while another instance still runs fails with
+`Address already in use` — but a *stale* server may already hold :8000 with a
+different DB and the new one never starts. `security_compare.py` detects this
+(`no session row appeared in <db>`); for manual demo, always `pkill` first and
+check `ss -tlnp | grep -E ':8000|:5050'` is clear before restarting.
+
 ## Naive lab containment (verified)
 
 `naive_lab.py` binds `HTTPServer(('127.0.0.1', PORT), ...)` — no config can

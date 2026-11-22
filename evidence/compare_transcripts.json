@@ -2,11 +2,39 @@
   "secure_log": [
     {
       "method": "GET",
-      "path": "/?q=%27%20OR%201%3D1--",
+      "path": "/",
       "fields": [],
       "status": 303,
       "body": "",
       "set_cookie": "sid=<redacted>; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800"
+    },
+    {
+      "method": "GET",
+      "path": "/login",
+      "fields": [],
+      "status": 200,
+      "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#faf6f0\"><meta name=\"description\" content=\"SecureShop Caf\u00e9 - freshly brewed coffee, iced lattes, and bakery treats.\"><title>Login | SecureShop Caf\u00e9</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script defer src=\"/static/security.",
+      "set_cookie": ""
+    },
+    {
+      "method": "POST",
+      "path": "/login",
+      "fields": [
+        "csrf",
+        "email",
+        "password"
+      ],
+      "status": 303,
+      "body": "",
+      "set_cookie": "sid=<redacted>; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800"
+    },
+    {
+      "method": "GET",
+      "path": "/?q=%27%20OR%201%3D1--",
+      "fields": [],
+      "status": 200,
+      "body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#faf6f0\"><meta name=\"description\" content=\"SecureShop Caf\u00e9 - freshly brewed coffee, iced lattes, and bakery treats.\"><title>Our Menu | SecureShop Caf\u00e9</title><link rel=\"stylesheet\" href=\"/static/style.css\"><script defer src=\"/static/securi",
+      "set_cookie": ""
     },
     {
       "method": "GET",
@@ -416,7 +444,7 @@
     {
       "scenario": "sqli-search",
       "naive": "1 Latte 2500<br>2 Croissant 1500",
-      "secure": "",
+      "secure": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><meta name=\"theme-color\" content=\"#faf6f0\"><meta name=\"description\" conte",
       "naive_vulnerable": true,
       "secure_defended": true,
       "note": "naive concatenates q into LIKE; secure uses bound parameters"

@@ -1,6 +1,6 @@
 === sqli-search: NAIVE VULNERABLE / SECURE DEFENDED
   naive : 1 Latte 2500<br>2 Croissant 1500
-  secure: 
+  secure: <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#faf6f0"><meta name="description" conte
   note  : naive concatenates q into LIKE; secure uses bound parameters
 
 === price-tampering: NAIVE VULNERABLE / SECURE DEFENDED
