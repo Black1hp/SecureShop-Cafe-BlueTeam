@@ -76,8 +76,9 @@ the app database — run it against a throwaway DB (`SECURESHOP_DB=/tmp/x.db`).
 
 ## Docs
 
-`docs/ARCHITECTURE.md` (one-page) · `docs/SECURITY_DESIGN_BLUE_TEAM.md`
-(threat model/STRIDE/DREAD) · `docs/SECURITY_COVERAGE.md` (matrix) ·
-`docs/ATTACK_EVIDENCE.md` · `docs/DEMO_SCRIPT.md` · `docs/QA_PREP.md` ·
-`docs/TEST_RESULTS.md` · `docs/THIRD_PARTY_CREDITS.md` · Menna's original
-Arabic review/evidence docs preserved alongside.
+`docs/ARCHITECTURE.md` (one-page) · `docs/DEMO_RUNBOOK.md` (**start here for
+the demo**) · `docs/SECURITY_DESIGN_BLUE_TEAM.md` (threat model/STRIDE/DREAD) ·
+`docs/SECURITY_COVERAGE.md` (matrix) · `docs/ATTACK_EVIDENCE.md` ·
+`docs/DEMO_SCRIPT.md` · `docs/QA_PREP.md` · `docs/TEST_RESULTS.md` ·
+`docs/THIRD_PARTY_CREDITS.md` · Menna's original Arabic review/evidence docs
+preserved alongside.
