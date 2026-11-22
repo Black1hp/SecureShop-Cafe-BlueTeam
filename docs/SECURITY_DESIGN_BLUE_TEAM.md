@@ -78,7 +78,7 @@ Every POST requires session CSRF secret and bounded urlencoded form. Cart quanti
 Audit records use allowlisted event names, numeric actor and target IDs, server timestamps. No passwords, OTPs, TOTP seeds, confirmation tokens, location coordinates or raw keystrokes are logged. Behavioral profile contains only quantized timing features retained while the account exists. This data deserves explicit consent, minimization, erasure and retention policies before real-world use. Debug logs can still expose local confirmation links; never use this in production.
 
 ## 10. Testing strategy and evidence
-- Automated: `python -m unittest discover -s tests -v` (41 tests OK in isolated environment on the hardening branch).
+- Automated: `python -m unittest discover -s tests -v` (42 tests OK in isolated environment on the hardening branch).
 - Functional smoke test: User and Admin browser sessions, initial login through checkout, product edits, newsletter, store credit and order history.
 - Security negative cases: price tampering, coupon reuse, empty cart, insufficient balance, missing CSRF, role restriction, IDOR, MFA account binding/replay, suspicious timing, out-of-policy location/time, invalid WebAuthn challenge/signature.
 - Outstanding: Manual real-device passkey registration/authentication; concurrent race stress testing; broad SAST/DAST with course-approved tooling; isolated naive-app comparisons; Red Team report and remediations; browser/OS compatibility validation.
@@ -103,4 +103,4 @@ This is a localhost educational prototype. No formal key management/HSM, email v
 
 
 ## Appendix: Verification revision
-The final test build validates WebAuthn `rp.id=localhost`, `rpId=localhost`, and origin `http://localhost:8000` together. It rejects invalid signature and stale challenges and tests time/location decision branches through HTTP with deterministic synthetic coordinates and fixed server time. The automated suite has 41 passing cases on the hardening branch; it does not replace an independent security review. See `TEST_RESULTS.md`, `FINAL_TEST_EVIDENCE_AR.md`, and `RED_TEAM_TRACKER_AR.md`.
+The final test build validates WebAuthn `rp.id=localhost`, `rpId=localhost`, and origin `http://localhost:8000` together. It rejects invalid signature and stale challenges and tests time/location decision branches through HTTP with deterministic synthetic coordinates and fixed server time. The automated suite has 42 passing cases on the hardening branch; it does not replace an independent security review. See `TEST_RESULTS.md`, `FINAL_TEST_EVIDENCE_AR.md`, and `RED_TEAM_TRACKER_AR.md`.

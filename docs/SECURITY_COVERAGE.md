@@ -2,7 +2,7 @@
 
 **Status definition:** Tested = automated regression exists and passed locally. HTTP-evidence = exercised against running servers by `scripts/security_compare.py` (transcripts in `evidence/`). Manual pending = browser/device step still needs a human pass. No row is proof of independent Red Team testing.
 
-Updated for the `feature/secure-shop-hardening` build (41 tests + 10/10 HTTP comparisons).
+Updated for the `feature/secure-shop-hardening` build (42 tests + 10/10 HTTP comparisons).
 
 | Topic | Threat / root cause | Code defense | Local automated evidence | Remaining work |
 |---|---|---|---|---|
@@ -33,7 +33,7 @@ Updated for the `feature/secure-shop-hardening` build (41 tests + 10/10 HTTP com
 | Error handling | Stack/secret leakage | Generic error pages, no debug output, `sys_version=''` | error-path tests | — |
 
 ## Evidence revision
-- 41-test suite green on the hardening branch (`python -m unittest discover -s tests`).
+- 42-test suite green on the hardening branch (`python -m unittest discover -s tests`).
 - `scripts/security_compare.py` → **10/10 scenarios: naive vulnerable, secure defended**; transcripts in `evidence/compare_summary.txt` + `evidence/compare_transcripts.json`.
 - `localhost` is the only WebAuthn RP/Origin. `127.0.0.1` is the loopback bind.
 - Independent Red Team findings still require the student team to run and document their own authorized pass (`docs/RED_TEAM_FINDINGS_TEMPLATE.md`).

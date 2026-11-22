@@ -227,6 +227,15 @@ class SecureShopTests(WebTestHelpers, unittest.TestCase):
         self.assertEqual(status,401)
         check.assert_called_once_with('whatever password',app.DUMMY_PASSWORD_HASH)
 
+    def test_registration_ip_budget(self):
+        for i in range(10):
+            self.post('/register',{'name':'T','email':'budget%d@example.test'%i,'password':'a long test password'})
+        status,_,_=self.post('/register',{'name':'T','email':'budgetx@example.test','password':'a long test password'})
+        self.assertEqual(status,429)
+        with app.db() as c:
+            self.assertIsNone(c.execute('SELECT id FROM users WHERE email=?',('budgetx@example.test',)).fetchone())
+            c.execute('DELETE FROM login_attempts WHERE key_hash=?',(app.token_hash('register|127.0.0.1'),))
+
     def test_exceptional_email_rejected_not_truncated(self):
         huge='a'*255+'@example.test'
         status,_,_=self.post('/register',{'name':'Too Long','email':huge,'password':'long enough password'})

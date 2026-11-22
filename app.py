@@ -81,6 +81,17 @@ def authenticator_qr(secret, account_email):
     return base64.b64encode(output.getvalue()).decode('ascii')
 
 
+def ip_budget(conn, bucket, ip, limit=10, window=600):
+    """Fixed-window per-IP throttle for unauthenticated write endpoints."""
+    key = token_hash(bucket + '|' + ip)
+    cutoff = int(time.time()) - window
+    conn.execute('DELETE FROM login_attempts WHERE at<?', (cutoff,))
+    if conn.execute('SELECT COUNT(*) AS n FROM login_attempts WHERE key_hash=? AND at>?', (key, cutoff)).fetchone()['n'] >= limit:
+        return False
+    conn.execute('INSERT INTO login_attempts(key_hash,at) VALUES(?,?)', (key, int(time.time())))
+    return True
+
+
 def issue_recovery_codes(conn, user_id):
     """Replace the user's single-use recovery set; returns the 8 plaintext
     codes for a one-time display. Only SHA-256 digests are persisted."""
@@ -686,6 +697,8 @@ class App(BaseHTTPRequestHandler):
             email = d.get('email','').strip().lower(); name = d.get('name','').strip(); password = d.get('password','')
             if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email) or len(email)>254 or not (1<=len(name)<=80) or not (12<=len(password)<=128):
                 raise ValueError('Enter a valid name/email and a password of 12–128 characters.')
+            if not ip_budget(c, 'register', self.client_address[0]):
+                return self.error(429,'Too many registrations. Try again later.')
             try:
                 with transaction(c):
                     cur = c.execute('INSERT INTO users(email,display_name,password_hash) VALUES(?,?,?)',(email,name,hash_password(password)))
@@ -954,6 +967,8 @@ class App(BaseHTTPRequestHandler):
         elif path == '/newsletter':
             email = d.get('email','').strip().lower()
             if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email) or len(email)>254: raise ValueError('Invalid email.')
+            if not ip_budget(c, 'newsletter', self.client_address[0]):
+                return self.error(429,'Too many subscriptions. Try again later.')
             existing = c.execute('SELECT coupon_id FROM newsletters WHERE email=?',(email,)).fetchone()
             if not existing:
                 code = 'NEWS-'+secrets.token_hex(6).upper()

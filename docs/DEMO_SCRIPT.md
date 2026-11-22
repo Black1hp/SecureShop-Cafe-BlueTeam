@@ -42,7 +42,7 @@ Walk 3–4 rows of `evidence/compare_summary.txt` live:
 - `/admin/audit`: show `login_failed`, `mfa_*`, `checkout_complete` events.
 
 ## 5. Wrap (1 min)
-- 41 automated tests green + 10/10 HTTP comparisons, both reproducible.
+- 42 automated tests green + 10/10 HTTP comparisons, both reproducible.
 - Honest limits: educational WebAuthn, no real email, sequential (not
   parallel) replay testing, independent student Red Team pass still pending.
 
