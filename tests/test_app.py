@@ -15,6 +15,9 @@ from pathlib import Path
 
 TEMP = tempfile.TemporaryDirectory()
 os.environ['SECURESHOP_DB'] = str(Path(TEMP.name) / 'testing.sqlite')
+# Force the dev outbox: a filled .env must never make tests hit real SMTP.
+os.environ['SECURESHOP_SMTP_USER'] = ''
+os.environ['SECURESHOP_SMTP_PASS'] = ''
 import app
 from auth_security import new_totp_secret, totp_at, verify_password
 import time

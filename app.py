@@ -26,6 +26,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
+
+
+def _load_env_file(path):
+    """Minimal .env loader (KEY=VALUE, # comments, optional quotes/`export `).
+    Process environment wins over file values — like python-dotenv, stdlib only."""
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('export '):
+                line = line[7:].lstrip()
+            key, sep, value = line.partition('=')
+            key = key.strip()
+            if sep and key and key not in os.environ:
+                os.environ[key] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+
+
+_load_env_file(BASE / '.env')
+
 DB_FILE = Path(os.environ.get('SECURESHOP_DB', str(BASE / 'secureshop.db')))
 HOST = os.environ.get('SECURESHOP_HOST', '127.0.0.1')
 PORT = int(os.environ.get('SECURESHOP_PORT', '8000'))
