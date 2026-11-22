@@ -15,10 +15,12 @@ import html
 import os
 import re
 import secrets
+import smtplib
 import sqlite3
 import time
 import urllib.parse
 from contextlib import contextmanager
+from email.message import EmailMessage
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +36,11 @@ MFA_LOCK_BASE = 5 * 60
 MFA_LOCK_MAX = 60 * 60
 MAX_BODY = 16_384
 RISK_GATE_ENFORCE = os.environ.get('SECURESHOP_RISK_GATE_ENFORCE') == '1'  # Optional, otherwise demo check only
+SMTP_HOST = os.environ.get('SECURESHOP_SMTP_HOST', 'smtp.gmail.com')
+SMTP_PORT = int(os.environ.get('SECURESHOP_SMTP_PORT', '465'))
+SMTP_USER = os.environ.get('SECURESHOP_SMTP_USER', '')
+SMTP_PASS = os.environ.get('SECURESHOP_SMTP_PASS', '')
+SMTP_FROM = os.environ.get('SECURESHOP_SMTP_FROM', '') or SMTP_USER
 
 # Hash computed once at startup so a login attempt for an unknown email still
 # performs a real Argon2 verification and leaks no existence signal by timing.
@@ -82,6 +89,29 @@ def authenticator_qr(secret, account_email):
     output = io.BytesIO()
     image.save(output, format='PNG')
     return base64.b64encode(output.getvalue()).decode('ascii')
+
+
+def send_mail(to, subject, body):
+    """Deliver an out-of-band message via Gmail SMTP_SSL. When credentials
+    are unset or the send fails, the message is printed to the server
+    terminal instead, so a zero-config demo keeps working. Never call this
+    for content that also appears in an HTTP response."""
+    if not (SMTP_USER and SMTP_PASS):
+        print('DEV OUTBOX to %s — %s\n%s' % (to, subject, body), flush=True)
+        return False
+    msg = EmailMessage()
+    msg['From'] = SMTP_FROM
+    msg['To'] = to
+    msg['Subject'] = subject
+    msg.set_content(body)
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10) as s:
+            s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+        return True
+    except (OSError, smtplib.SMTPException) as exc:
+        print('MAIL SEND FAILED to %s: %s\n%s' % (to, exc, body), flush=True)
+        return False
 
 
 def ip_budget(conn, bucket, ip, limit=10, window=600):
@@ -793,9 +823,11 @@ class App(BaseHTTPRequestHandler):
                               'ON CONFLICT(email) DO UPDATE SET display_name=excluded.display_name,password_hash=excluded.password_hash,token_hash=excluded.token_hash,expires_at=excluded.expires_at',
                               (email,name,hash_password(password),token_hash(token),int(time.time())+3600))
             if token is not None:
-                # Local demo only: log verification URL, never publish this pattern for production.
-                print('DEVELOPMENT CONFIRMATION LINK: http://%s:%s/confirm?token=%s' % (HOST,PORT,token), flush=True)
-            self.send_html(200,self.page('Registration submitted','<div class="notice">If the email can be registered, a confirmation link was sent. In this local development environment, confirmation links are printed to the server terminal.</div>'))
+                # Tokens only ever travel via the mailbox (or the dev-terminal
+                # outbox when SMTP is unset) — never the HTTP response.
+                send_mail(email,'SecureShop Cafe - confirm your registration',
+                          'Welcome! Confirm your account within 1 hour:\nhttp://%s:%s/confirm?token=%s\n' % (HOST,PORT,token))
+            self.send_html(200,self.page('Registration submitted','<div class="notice">If the email can be registered, a confirmation link was sent to it. When mail is not configured, it appears on the server terminal instead.</div>'))
         elif path == '/login':
             email = d.get('email','').strip().lower(); password = d.get('password','')
             if len(email)>254: raise ValueError('Invalid email length.')
@@ -1068,10 +1100,11 @@ class App(BaseHTTPRequestHandler):
                     cp_id = c.execute('INSERT INTO coupons(code,percent_off) VALUES(?,10)',(code,)).lastrowid
                     c.execute('INSERT INTO newsletters(email,coupon_id) VALUES(?,?)',(email,cp_id))
                 # Coupons must never be shown to whoever submits a form: only the
-                # mailbox owner may learn the code. Local dev prints to the
-                # server terminal like the confirmation link; production email.
-                print('DEVELOPMENT NEWSLETTER COUPON for %s: %s' % (email,code), flush=True)
-            self.send_html(200,self.page('Newsletter','<div class="notice">If this email is new to our list, your one-time 10% coupon was sent to it. In this local development environment, it is printed to the server terminal.</div>'))
+                # mailbox owner may learn the code. SMTP when configured, else
+                # the dev-terminal outbox; never the HTTP response.
+                send_mail(email,'Your SecureShop Cafe coupon',
+                          'Your one-time 10%% off coupon code: %s\n' % code)
+            self.send_html(200,self.page('Newsletter','<div class="notice">If this email is new to our list, your one-time 10% coupon was sent to it. When mail is not configured, it appears on the server terminal instead.</div>'))
         elif path == '/admin/product':
             if not self.must_admin(): return
             name=d.get('name','').strip(); desc=d.get('description','').strip()
