@@ -4,7 +4,7 @@ Binds to 127.0.0.1 only, uses its own disposable SQLite database, and shares
 nothing with SecureShop Café. It exists so the same HTTP attack scenario can be
 run against a vulnerable build and the hardened build side by side.
 
-Run: SECURESHOP_NAIVE_DB=/tmp/naive.db python naive_lab.py   (port 8010)
+Run: SECURESHOP_NAIVE_DB=/tmp/naive.db python naive_lab.py   (port 5050)
 """
 import http.server
 import os
@@ -14,7 +14,7 @@ import urllib.parse
 from pathlib import Path
 
 DB = Path(os.environ.get('SECURESHOP_NAIVE_DB', str(Path(__file__).parent / 'naive_lab.db')))
-PORT = int(os.environ.get('SECURESHOP_NAIVE_PORT', '8010'))
+PORT = int(os.environ.get('SECURESHOP_NAIVE_PORT', '5050'))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, email TEXT, password TEXT, credit INTEGER);

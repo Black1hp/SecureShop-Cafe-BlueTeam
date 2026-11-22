@@ -36,7 +36,7 @@ Open `http://localhost:8000` (passkeys require the `localhost` RP/origin —
 
 ```sh
 python app.py                                   # terminal 1 (secure, :8000)
-python naive_lab.py                             # terminal 2 (naive, :8010)
+python naive_lab.py                             # terminal 2 (naive, :5050)
 python scripts/security_compare.py              # terminal 3
 # -> "10/10 scenarios: naive vulnerable, secure defended"
 #    transcripts: evidence/compare_summary.txt, compare_transcripts.json
@@ -60,7 +60,7 @@ the app database — run it against a throwaway DB (`SECURESHOP_DB=/tmp/x.db`).
 | `SECURESHOP_HOST`/`PORT` | `127.0.0.1:8000` | bind address — keep loopback |
 | `SECURESHOP_HTTPS` | off | adds `Secure` cookie flag + HSTS |
 | `SECURESHOP_RISK_GATE_ENFORCE` | off | forces passkey+geo/time gate at login |
-| `SECURESHOP_NAIVE_DB`/`_PORT` | `./naive_lab.db:8010` | lab only |
+| `SECURESHOP_NAIVE_DB`/`_PORT` | `./naive_lab.db:5050` | lab only |
 
 ## Honest limits
 

@@ -3,7 +3,7 @@
 Setup before presenting (3 commands):
 ```sh
 python app.py                 # terminal 1 — secure app on :8000
-python naive_lab.py           # terminal 2 — naive lab on :8010
+python naive_lab.py           # terminal 2 — naive lab on :5050
 # browser: http://localhost:8000   (use localhost, not 127.0.0.1, for passkeys)
 ```
 

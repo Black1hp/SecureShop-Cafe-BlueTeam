@@ -5,7 +5,7 @@ and SecureShop Café, capturing real requests/responses and resulting state as
 evidence transcripts under evidence/.
 
 Usage:  python scripts/security_compare.py \
-            --secure http://127.0.0.1:8000 --naive http://127.0.0.1:8010
+            --secure http://127.0.0.1:8000 --naive http://127.0.0.1:5050
 
 The secure app and naive lab must both be running. The script provisions its
 own fixture user in the secure database (SECURESHOP_DB or ./secureshop.db) and
@@ -243,7 +243,7 @@ def run_scenarios(secure, naive):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--secure', default='http://127.0.0.1:8000')
-    ap.add_argument('--naive', default='http://127.0.0.1:8010')
+    ap.add_argument('--naive', default='http://127.0.0.1:5050')
     ap.add_argument('--out', default=str(BASE / 'evidence'))
     args = ap.parse_args()
 

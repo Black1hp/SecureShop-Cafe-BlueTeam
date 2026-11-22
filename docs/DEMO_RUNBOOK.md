@@ -29,7 +29,7 @@ pip install -r requirements.txt
 rm -f demo.db naive_lab.db
 SECURESHOP_DB=$PWD/demo.db python scripts/seed_demo.py    # idempotent seed
 SECURESHOP_DB=$PWD/demo.db python app.py                  # secure app -> :8000
-python naive_lab.py                                       # naive lab -> :8010
+python naive_lab.py                                       # naive lab -> :5050
 ```
 
 Open `http://localhost:8000` (use **localhost**, not 127.0.0.1, for passkeys).
@@ -53,8 +53,8 @@ SECURESHOP_DB=$PWD/demo.db python scripts/seed_demo.py
 ## Naive lab containment (verified)
 
 `naive_lab.py` binds `HTTPServer(('127.0.0.1', PORT), ...)` — no config can
-make it listen externally. Measured: `curl http://127.0.0.1:8010/` → 200;
-`curl http://<external-addr>:8010/` → connection refused. Keep it that way —
+make it listen externally. Measured: `curl http://127.0.0.1:5050/` → 200;
+`curl http://<external-addr>:5050/` → connection refused. Keep it that way —
 the secure app also defaults `SECURESHOP_HOST=127.0.0.1`.
 
 ## Walkthrough (10–15 min)
@@ -74,7 +74,7 @@ the secure app also defaults `SECURESHOP_HOST=127.0.0.1`.
    - `idor-order`: naive `/order/1` to anyone; secure 404 for non-owner.
    - `sqli-search` or `csrf-profile`: naive concatenates/accepts; secure
      bound params / 403.
-   For a live manual attack: `curl -b jar "http://127.0.0.1:8010/?q=%27%20OR%201%3D1--"`
+   For a live manual attack: `curl -b jar "http://127.0.0.1:5050/?q=%27%20OR%201%3D1--"`
    dumps the naive table; the same on :8000 returns nothing.
 5. **MFA + recovery (2.5 min)** — `/mfa/setup` → scan QR (Google/Microsoft
    Authenticator) → TOTP code → **8 recovery codes shown once** (hashed in

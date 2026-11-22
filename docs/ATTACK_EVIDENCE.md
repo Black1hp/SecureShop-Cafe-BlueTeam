@@ -1,6 +1,6 @@
 # Attack Evidence Report — naive vs secure (real HTTP)
 
-Method: `naive_lab.py` (deliberately vulnerable, 127.0.0.1:8010, disposable DB)
+Method: `naive_lab.py` (deliberately vulnerable, 127.0.0.1:5050, disposable DB)
 and SecureShop Café (127.0.0.1:8000) received the **same** attack requests via
 `scripts/security_compare.py`. Transcripts: `evidence/compare_summary.txt`
 (human-readable) and `evidence/compare_transcripts.json` (full request log,
